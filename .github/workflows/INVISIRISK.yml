@@ -28,12 +28,14 @@ jobs:
       # - name: Verify Git Version
       #   run: git --version
          
+      # ============= InvisiRisk Setup =============
       - name: Setup PSE
         uses: invisirisk/pse-action@develop
         with:
           api_url: "https://app.stage.invisirisk.com"
           app_token: ${{ secrets.IR_API_KEY }}
           mode: "docker-intercept"
+      # ============= InvisiRisk Setup End =============
 
       - uses: actions/checkout@v4
 
@@ -98,7 +100,6 @@ jobs:
       # - name: Mime Type Policy
       #   run: curl -s -L "https://tinyurl.com/invisirisk"
 
-     
 
       # - name: Send POST request with curl
       #   run: |
@@ -112,11 +113,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ============= InvisiRisk Cleanup =============
       - name: Cleanup PSE
         if: always()
         uses: invisirisk/pse-action@develop
         with:
           cleanup: "true"
+      # ============= InvisiRisk Cleanup End =============
 
   gather_analytics:
     runs-on: ubuntu-latest
@@ -131,15 +134,3 @@ jobs:
           app_token: ${{ secrets.IR_API_KEY }}
           send_job_status: "true"
           debug: "true"
-
-
-
-
-
-
-
-
-
-
-
-
