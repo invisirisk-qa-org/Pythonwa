@@ -28,14 +28,6 @@ jobs:
       # - name: Verify Git Version
       #   run: git --version
          
-      # ============= InvisiRisk Setup =============
-      - name: Setup PSE
-        uses: invisirisk/pse-action@develop
-        with:
-          api_url: "https://app.stage.invisirisk.com"
-          app_token: ${{ secrets.IR_API_KEY }}
-          mode: "docker-intercept"
-      # ============= InvisiRisk Setup End =============
 
       - uses: actions/checkout@v4
 
@@ -43,6 +35,34 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.9"
+
+
+      - name: Install and activate mise
+        run: |
+          export PATH="$HOME/.local/bin:$PATH
+          curl -sSL https://mise.run | sh
+          eval "$($HOME/.local/bin/mise activate bash)"
+          mise install
+          mise use ruby
+          ruby -v
+
+      - name: Install dependencies with Bundler
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eval "$($HOME/.local/bin/mise activate bash)"
+          
+          # Install bundler
+          gem install bundler --no-document
+          
+          # Install gems into vendor/bundle for caching
+          bundle config set path 'vendor/bundle'
+          bundle install --jobs 4 --retry 3
+
+      - name: Run tests
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          eval "$($HOME/.local/bin/mise activate bash)"
+          bundle exec rake test || echo "No tests defined"
 
       # - name: docker
       #   run: docker pull testcontainers/ryuk:0.12.0
@@ -113,14 +133,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ============= InvisiRisk Cleanup =============
-      - name: Cleanup PSE
-        if: always()
-        uses: invisirisk/pse-action@develop
-        with:
-          cleanup: "true"
-      # ============= InvisiRisk Cleanup End =============
-
   gather_analytics:
     runs-on: ubuntu-latest
     name: Gather Analytics
@@ -134,3 +146,10 @@ jobs:
           app_token: ${{ secrets.IR_API_KEY }}
           send_job_status: "true"
           debug: "true"
+
+
+
+
+
+
+
