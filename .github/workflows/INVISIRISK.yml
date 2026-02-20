@@ -7,7 +7,7 @@ permissions:
 
   actions: read
   security-events: write
-  contents: read
+             contents: read
 
 jobs:
   scan-scheduled:
