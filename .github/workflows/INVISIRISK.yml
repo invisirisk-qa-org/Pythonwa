@@ -1,5 +1,4 @@
-name: SNYK x InvisiRisk
-
+name: Multi-language application
 on:
   workflow_dispatch:
 
@@ -7,49 +6,51 @@ permissions:
   checks: write
   contents: write
   packages: read
-  actions: write
 
 jobs:
-  sync-and-build:
+  build:
     runs-on: ubuntu-latest
-    name: Sync fork and Run build
-
+    name: Build & Setup
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
+      # -------------------------
+      # Node.js / JavaScript setup
+      # -------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'  # choose LTS version
 
-      - name: Cache NPM modules
-        uses: actions/cache@v3
+      - name: Install Node.js dependencies
+        run: npm install
+
+      # -------------------------
+      # Python setup
+      # -------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+          python-version: '3.9'
 
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
-      - name: Build Docker Image
-        run: docker build -t my-app:latest .
-
-  gather_analytics:
-    runs-on: ubuntu-latest
-    name: Gather Analytics
-    needs: sync-and-build
-    if: always()
-    steps:
-      - name: Gather Status
-        uses: invisirisk/pse-action@latest
+      # -------------------------
+      # PHP setup
+      # -------------------------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         with:
-          api_url: "https://app.invisirisk.com"
-          app_token: ${{ secrets.IR_API_KEY }}
-          send_job_status: "true"
-          debug: "true"
+          php-version: '8.2'  # choose your version
+          extensions: mbstring, intl, curl  # add any required extensions
+
+      - name: Install PHP dependencies
+        run: composer install
+
+      # -------------------------
+      # Simulate long-running task (example)
+      # -------------------------
+      - name: Simulate long-running task
+        continue-on-error: true
+        run: sleep 200
