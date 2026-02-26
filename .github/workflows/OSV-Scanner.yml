@@ -1,103 +1,58 @@
-version: 2
-updates:
-  - package-ecosystem: "dotnet-sdk"
-    directory: "/dotnet/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "dotnet-sdk"
-    directory: "/dotnet/npgsql"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "gomod"
-    directory: "/go/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "gomod"
-    directory: "/go/pgx"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "maven"
-    directory: "/java/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "maven"
-    directory: "/java/liquibase"
-    schedule:
-      interval: "daily"
-  - package-ecosystem: "gradle"
-    directory: "/java/pgjdbc"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "gradle"
-    directory: "/java/spring_boot"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/javascript/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/javascript/node-postgres"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/javascript/postgres-js"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/lambda"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "pip"
-    directory: "/python/asyncpg"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "pip"
-    directory: "/python/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "pip"
-    directory: "/python/psycopg"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "pip"
-    directory: "/python/psycopg2"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/typescript/prisma"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/typescript/sequelize"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "npm"
-    directory: "/typescript/type-orm"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-    ignore:
-      - dependency-name: "gitleaks/gitleaks-action"
+name: Deploy Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build docs
+        working-directory: docs
+        run: pnpm build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
