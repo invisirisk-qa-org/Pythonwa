@@ -1,44 +1,248 @@
-# This workflow will upload a Python Package to PyPI when a release is created
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python#publishing-to-package-registries
+name: TypeScript Prisma integration tests
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
-name: Publish to PyPI
+permissions: {}
 
 on:
+  workflow_call: {}
   workflow_dispatch:
-  release:
-    types: [ published ]
-
-permissions:
-  contents: read
+  push:
+    branches: [ main ]
 
 jobs:
-  build-and-inspect-package:
-    name: Build & inspect package.
+  format:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v6
-      - uses: hynek/build-and-inspect-python-package@v2
+      - name: Checkout code
+        uses: actions/checkout@v6
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.x"
 
-  upload-to-pypi:
-    name: Upload package to PyPI
-    needs: build-and-inspect-package
+      - name: Check formatting
+        working-directory: ./typescript/prisma
+        run: |
+          npm ci
+          npm run format:check
+
+  create-cluster:
+    uses: ./.github/workflows/dsql-cluster-create.yml
+    with:
+      workflow_name: typescript-prisma
+    secrets:
+      AWS_IAM_ROLE: ${{ secrets.TYPESCRIPT_IAM_ROLE }}
+    permissions:
+      id-token: write # required by aws-actions/configure-aws-credentials
+
+  prisma-integ-test:
+    needs: create-cluster
     runs-on: ubuntu-latest
     permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing, but
-      # should NOT be granted anywhere else!
-      id-token: write
+      id-token: write # required by aws-actions/configure-aws-credentials
 
     steps:
-      - name: Download built artifact to dist/
-        uses: actions/download-artifact@v7
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
         with:
-          name: Packages
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          node-version: "22.x"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.TYPESCRIPT_IAM_ROLE }}
+          aws-region: ${{ needs.create-cluster.outputs.region }}
+
+      - name: Download DSQL certificate
+        run: |
+          mkdir -p ~/.postgresql
+          wget https://www.amazontrust.com/repository/AmazonRootCA1.pem -O ~/.postgresql/root.crt
+
+      - name: Install dependencies
+        working-directory: ./typescript/prisma
+        run: |
+          npm ci
+
+      - name: Build project
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run build
+
+      - name: Create psql auth helper
+        run: |
+          cat > /tmp/configure-psql.sh << 'EOF'
+          configure_psql() {
+            local user=$1
+
+            if [ "$user" = "admin" ]; then
+              local auth_type="admin-auth"
+            else
+              local auth_type="auth"
+            fi
+
+            export PGHOST=$CLUSTER_ENDPOINT
+            export PGPASSWORD=$(aws dsql generate-db-connect-${auth_type}-token --region $REGION --hostname $PGHOST --expires-in 300)
+            export PGUSER=$user
+            export PGDATABASE="postgres"
+            export PGSSLMODE="verify-full"
+          }
+          EOF
+
+      - name: Run migrations as admin
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "admin"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          # Ensure clean state first.
+          npm run prisma:migrate-down
+
+          npm run prisma:migrate-up
+
+      - name: Test incremental migration workflow
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "admin"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+          REGION: ${{ needs.create-cluster.outputs.region }}
+        run: |
+          source /tmp/configure-psql.sh
+          configure_psql $CLUSTER_USER
+
+          # Add a new column to the vet model (after the name field)
+          sed -i '/model vet/,/^}/s/name        String      @db.VarChar(30)/name        String      @db.VarChar(30)\n  phone       String?     @db.VarChar(20)/' prisma/veterinary-schema.prisma
+
+          # Show the change
+          grep -A3 "model vet" prisma/veterinary-schema.prisma
+
+          # Validate the modified schema first
+          npm run validate prisma/veterinary-schema.prisma
+
+          # Generate incremental migration using --from-config-datasource (reads from prisma.config.ts)
+          # Use --force because Prisma may generate DROP CONSTRAINT for PKs
+          npm run dsql-migrate -- prisma/veterinary-schema.prisma -o prisma/migrations/incremental/migration.sql --from-config-datasource --force
+
+          # Show what was generated
+          cat prisma/migrations/incremental/migration.sql
+
+          # Apply the incremental migration
+          PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK=1 psql -f prisma/migrations/incremental/migration.sql
+
+          # Verify the column was added
+          psql -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'vet' AND column_name = 'phone'" | grep -q phone
+
+          # Clean up: revert schema and remove incremental migration folder
+          git checkout prisma/veterinary-schema.prisma
+          rm -rf prisma/migrations/incremental
+
+      - name: Run integration tests as admin
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "admin"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run test -- --testPathPatterns=dsql-client
+
+      - name: Run sample as admin
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "admin"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run sample
+
+      - name: Clean admin schema
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "admin"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run prisma:migrate-down
+
+      - name: Create non-admin role
+        working-directory: ./typescript/prisma
+        env:
+          ADMIN_USER: "admin"
+          NON_ADMIN_USER: "myuser"
+          NON_ADMIN_SCHEMA: "myschema"
+          CLUSTER_ROLE: ${{ secrets.TYPESCRIPT_IAM_ROLE }}
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+          REGION: ${{ needs.create-cluster.outputs.region }}
+        run: |
+          source /tmp/configure-psql.sh
+          configure_psql $ADMIN_USER
+
+          # Ensure clean state first.
+          psql -c "REVOKE ALL PRIVILEGES ON SCHEMA \"$NON_ADMIN_SCHEMA\" FROM \"$NON_ADMIN_USER\"" || true
+          psql -c "DROP SCHEMA IF EXISTS \"$NON_ADMIN_SCHEMA\" CASCADE"
+          psql -c "AWS IAM REVOKE \"$NON_ADMIN_USER\" FROM '$CLUSTER_ROLE'" || true
+          psql -c "DROP ROLE IF EXISTS \"$NON_ADMIN_USER\""
+
+          psql -c "CREATE ROLE \"$NON_ADMIN_USER\" WITH LOGIN"
+          psql -c "AWS IAM GRANT \"$NON_ADMIN_USER\" TO '$CLUSTER_ROLE'"
+          psql -c "CREATE SCHEMA \"$NON_ADMIN_SCHEMA\""
+          psql -c "GRANT ALL PRIVILEGES ON SCHEMA \"$NON_ADMIN_SCHEMA\" TO \"$NON_ADMIN_USER\""
+
+      - name: Run migrations as non-admin
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "myuser"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          # Ensure clean state first.
+          npm run prisma:migrate-down
+
+          npm run prisma:migrate-up
+
+      - name: Run sample as non-admin
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "myuser"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run sample
+
+      - name: Clean non-admin schema
+        working-directory: ./typescript/prisma
+        env:
+          CLUSTER_USER: "myuser"
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+        run: |
+          npm run prisma:migrate-down
+
+      - name: Clean non-admin role
+        working-directory: ./typescript/prisma
+        env:
+          ADMIN_USER: "admin"
+          NON_ADMIN_USER: "myuser"
+          NON_ADMIN_SCHEMA: "myschema"
+          CLUSTER_ROLE: ${{ secrets.TYPESCRIPT_IAM_ROLE }}
+          CLUSTER_ENDPOINT: ${{ needs.create-cluster.outputs.cluster-endpoint }}
+          REGION: ${{ needs.create-cluster.outputs.region }}
+        run: |
+          source /tmp/configure-psql.sh
+          configure_psql $ADMIN_USER
+
+          psql -c "REVOKE ALL PRIVILEGES ON SCHEMA \"$NON_ADMIN_SCHEMA\" FROM \"$NON_ADMIN_USER\""
+          psql -c "DROP SCHEMA \"$NON_ADMIN_SCHEMA\" CASCADE"
+          psql -c "AWS IAM REVOKE \"$NON_ADMIN_USER\" FROM '$CLUSTER_ROLE'"
+          psql -c "DROP ROLE \"$NON_ADMIN_USER\""
+
+  delete-cluster:
+    if: always() && needs.create-cluster.result == 'success'
+    needs: [create-cluster, prisma-integ-test]
+    uses: ./.github/workflows/dsql-cluster-delete.yml
+    with:
+      cluster-id: ${{ needs.create-cluster.outputs.cluster-id }}
+      region: ${{ needs.create-cluster.outputs.region }}
+    secrets:
+      AWS_IAM_ROLE: ${{ secrets.TYPESCRIPT_IAM_ROLE }}
+    permissions:
+      id-token: write # required by aws-actions/configure-aws-credentials
