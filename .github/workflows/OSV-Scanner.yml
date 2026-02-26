@@ -79,16 +79,6 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/rust/cluster_management"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
-  - package-ecosystem: "cargo"
-    directory: "/rust/sqlx"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 5
   - package-ecosystem: "npm"
     directory: "/typescript/prisma"
     schedule:
